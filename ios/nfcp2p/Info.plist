@@ -38,6 +38,8 @@
     <string>12.0</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>NFCReaderUsageDescription</key>
+    <string>We need to use NFC to read tags and communicate with other devices</string>
     <key>NSAppTransportSecurity</key>
     <dict>
       <key>NSAllowsArbitraryLoads</key>
@@ -75,5 +77,20 @@
     <string>Automatic</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
+    <key>com.apple.developer.nfc.readersession.felica.systemcodes</key>
+    <array>
+      <string>12FC</string>
+    </array>
+    <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
+    <array>
+      <string>com.anonymous.nfcp2p</string>
+    </array>
+    <key>NFCReaderUsageDescription</key>
+    <string>We need to use NFC</string>
+    <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
+    <array>
+      <string>D2760000850100</string>
+      <string>D2760000850101</string>
+    </array>
   </dict>
 </plist>

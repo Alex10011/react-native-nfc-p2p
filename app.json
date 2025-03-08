@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "nfc-p2p",
+    "name": "NFC P2P",
     "slug": "nfc-p2p",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,14 +10,26 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.nfcp2p"
+      "bundleIdentifier": "com.anonymous.nfcp2p",
+      "infoPlist": {
+        "NFCReaderUsageDescription": "We need to use NFC to read tags and communicate with other devices",
+        "com.apple.developer.nfc.readersession.iso7816.select-identifiers": [
+          "com.anonymous.nfcp2p"
+        ],
+        "com.apple.developer.nfc.readersession.felica.systemcodes": [
+          "12FC"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.anonymous.nfcp2p"
+      "package": "com.anonymous.nfcp2p",
+      "permissions": [
+        "NFC"
+      ]
     },
     "web": {
       "bundler": "metro",
