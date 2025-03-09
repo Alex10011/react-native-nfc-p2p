@@ -18,6 +18,35 @@ declare module "react-native-nfc-manager" {
   }
 }
 
+// Define tag data interface
+export interface TagData {
+  id?: string;
+  technologiesAvailable?: string[];
+  type?: string;
+  maxSize?: number;
+  isWritable?: boolean;
+  ndefMessage?: any; // Use any type to avoid TypeScript errors with NdefRecord
+  rawPayload?: string;
+  parsedPayload?: any;
+}
+
+/**
+ * Mapping of technology support by platform
+ */
+export const TECH_SUPPORT = {
+  [NfcTech.Ndef]: { android: true, ios: true },
+  [NfcTech.NfcA]: { android: true, ios: true },
+  [NfcTech.IsoDep]: { android: true, ios: true },
+  [NfcTech.NfcB]: { android: true, ios: false },
+  [NfcTech.NfcF]: { android: true, ios: false },
+  [NfcTech.NfcV]: { android: true, ios: false },
+  [NfcTech.MifareClassic]: { android: true, ios: false },
+  [NfcTech.MifareUltralight]: { android: true, ios: false },
+  [NfcTech.MifareIOS]: { android: false, ios: true },
+  [NfcTech.Iso15693IOS]: { android: false, ios: true },
+  [NfcTech.FelicaIOS]: { android: false, ios: true },
+};
+
 class NFCService {
   private static instance: NFCService;
   private isInitialized: boolean = false;
@@ -343,6 +372,210 @@ class NFCService {
   }
 
   /**
+   * Read an NFC tag and return comprehensive tag information
+   * Works on both iOS and Android
+   */
+  async readNFCTag(): Promise<TagData> {
+    if (!this.isInitialized) {
+      throw new Error("NFC not initialized");
+    }
+
+    this.ensureNoActiveOperation();
+    this.isReading = true;
+
+    const readPromise = new Promise<TagData>((resolve, reject) => {
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        this.cancelNfcOperation();
+        this.isReading = false;
+        this.currentOperation = null;
+        reject(new Error("NFC tag read timeout"));
+      }, 60000);
+
+      if (Platform.OS === "ios") {
+        // iOS implementation for reading tags
+        const iosOptions = {
+          alertMessage: "Hold your iPhone near an NFC tag",
+        };
+
+        NfcManager.registerTagEvent(iosOptions)
+          .then(() => {
+            console.log("iOS NFC tag reader ready");
+
+            // For iOS, we need to set up an event listener to get the tag data
+            NfcManager.setEventListener(NfcEvents.DiscoverTag, (tag: any) => {
+              try {
+                console.log("Tag discovered:", tag);
+
+                const tagData: TagData = {
+                  id: tag.id,
+                  ndefMessage: tag.ndefMessage,
+                };
+
+                // Try to parse NDEF message if present
+                if (tag.ndefMessage && tag.ndefMessage.length > 0) {
+                  const record = tag.ndefMessage[0];
+                  try {
+                    tagData.rawPayload = Ndef.text.decodePayload(
+                      record.payload
+                    );
+
+                    // Try to parse as JSON if possible
+                    try {
+                      tagData.parsedPayload = JSON.parse(tagData.rawPayload);
+                    } catch (e) {
+                      // Not a JSON, keep as string
+                      tagData.parsedPayload = tagData.rawPayload;
+                    }
+                  } catch (e) {
+                    console.log("Could not decode payload as text:", e);
+                  }
+                }
+
+                // Finish the reading operation
+                clearTimeout(timeoutId);
+                this.isReading = false;
+                this.currentOperation = null;
+                this.cancelNfcOperation();
+                resolve(tagData);
+              } catch (error) {
+                clearTimeout(timeoutId);
+                this.isReading = false;
+                this.currentOperation = null;
+                this.cancelNfcOperation();
+                reject(error);
+              }
+            });
+          })
+          .catch((error: Error) => {
+            clearTimeout(timeoutId);
+            this.isReading = false;
+            this.currentOperation = null;
+            reject(error);
+          });
+      } else {
+        // Android implementation for reading tags
+        NfcManager.requestTechnology([NfcTech.Ndef, NfcTech.NdefFormatable])
+          .then(async () => {
+            // Get the tag data
+            const tag = await NfcManager.getTag();
+            console.log("Tag details:", tag);
+
+            const tagData: TagData = {
+              id: tag?.id,
+              technologiesAvailable: tag?.techTypes,
+              maxSize: tag?.maxSize,
+              isWritable: tag?.isWritable as boolean | undefined,
+              ndefMessage: tag?.ndefMessage,
+            };
+
+            // Try to parse NDEF message if present
+            if (tag.ndefMessage && tag.ndefMessage.length > 0) {
+              const record = tag.ndefMessage[0];
+              try {
+                tagData.rawPayload = Ndef.text.decodePayload(record.payload);
+
+                // Try to parse as JSON if possible
+                try {
+                  tagData.parsedPayload = JSON.parse(tagData.rawPayload);
+                } catch (e) {
+                  // Not a JSON, keep as string
+                  tagData.parsedPayload = tagData.rawPayload;
+                }
+              } catch (e) {
+                console.log("Could not decode payload as text:", e);
+              }
+            }
+
+            // Finish reading
+            clearTimeout(timeoutId);
+            this.isReading = false;
+            this.currentOperation = null;
+            this.cancelNfcOperation();
+            resolve(tagData);
+          })
+          .catch((error: Error) => {
+            clearTimeout(timeoutId);
+            this.isReading = false;
+            this.currentOperation = null;
+            this.cancelNfcOperation();
+            reject(error);
+          });
+      }
+    });
+
+    this.currentOperation = readPromise;
+    return readPromise;
+  }
+
+  /**
+   * Write data to an NFC tag
+   * Only works on Android
+   */
+  async writeToNFCTag(data: string): Promise<void> {
+    if (!this.isInitialized) {
+      throw new Error("NFC not initialized");
+    }
+
+    if (Platform.OS === "ios") {
+      throw new Error("Writing to NFC tags is not supported on iOS");
+    }
+
+    this.ensureNoActiveOperation();
+    this.isWriting = true;
+
+    const writePromise = new Promise<void>((resolve, reject) => {
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        this.cancelNfcOperation();
+        this.isWriting = false;
+        this.currentOperation = null;
+        reject(new Error("NFC tag write timeout"));
+      }, 60000);
+
+      // Android implementation for writing to tags
+      NfcManager.requestTechnology([NfcTech.Ndef, NfcTech.NdefFormatable])
+        .then(async () => {
+          try {
+            // Create NDEF message
+            const bytes = Ndef.encodeMessage([Ndef.textRecord(data)]);
+
+            if (bytes) {
+              // Write to tag
+              await NfcManager.ndefHandler.writeNdefMessage(bytes);
+              console.log("Successfully wrote to NFC tag");
+
+              // Finish writing
+              clearTimeout(timeoutId);
+              this.isWriting = false;
+              this.currentOperation = null;
+              this.cancelNfcOperation();
+              resolve();
+            } else {
+              throw new Error("Failed to encode NDEF message");
+            }
+          } catch (error) {
+            clearTimeout(timeoutId);
+            this.isWriting = false;
+            this.currentOperation = null;
+            this.cancelNfcOperation();
+            reject(error);
+          }
+        })
+        .catch((error: Error) => {
+          clearTimeout(timeoutId);
+          this.isWriting = false;
+          this.currentOperation = null;
+          this.cancelNfcOperation();
+          reject(error);
+        });
+    });
+
+    this.currentOperation = writePromise;
+    return writePromise;
+  }
+
+  /**
    * Cancel any ongoing NFC operations
    */
   private async cancelNfcOperation(): Promise<void> {
@@ -400,6 +633,272 @@ class NFCService {
     } catch (error) {
       console.error("Error cleaning up NFC:", error);
     }
+  }
+
+  /**
+   * Tests if a specific NFC technology is available on the current device
+   * @param tech NFC technology to test from NfcTech
+   * @returns True if technology is supported on current platform
+   */
+  isTechSupported(tech: string): boolean {
+    const currentPlatform = Platform.OS === "ios" ? "ios" : "android";
+
+    // Check if the technology exists in our mapping
+    if (tech in TECH_SUPPORT) {
+      return TECH_SUPPORT[tech as keyof typeof TECH_SUPPORT][
+        currentPlatform as "ios" | "android"
+      ];
+    }
+
+    return false;
+  }
+
+  /**
+   * Test a specific NFC technology
+   * @param tech The NFC technology to test
+   * @returns Tag information from the detected tag
+   */
+  async testNfcTechnology(tech: string): Promise<TagData> {
+    if (!this.isInitialized) {
+      throw new Error("NFC not initialized");
+    }
+
+    const currentPlatform = Platform.OS === "ios" ? "ios" : "android";
+
+    // Check if the technology is supported on this platform
+    if (tech in TECH_SUPPORT) {
+      const techSupport = TECH_SUPPORT[tech as keyof typeof TECH_SUPPORT];
+      if (!techSupport[currentPlatform as "ios" | "android"]) {
+        throw new Error(`${tech} is not supported on ${currentPlatform}`);
+      }
+    } else {
+      throw new Error(`Unknown technology: ${tech}`);
+    }
+
+    this.ensureNoActiveOperation();
+    this.isReading = true;
+
+    const techPromise = new Promise<TagData>((resolve, reject) => {
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        this.cancelNfcOperation();
+        this.isReading = false;
+        this.currentOperation = null;
+        reject(new Error("NFC technology test timeout"));
+      }, 60000);
+
+      if (Platform.OS === "ios") {
+        // iOS implementation for technology detection
+        // Some technologies require special handling on iOS
+        if (
+          tech === NfcTech.MifareIOS ||
+          tech === NfcTech.Iso15693IOS ||
+          tech === NfcTech.FelicaIOS
+        ) {
+          // For iOS-specific technologies, we need specific options
+          const iosOptions = {
+            alertMessage: `Hold your iPhone near a ${tech.replace(
+              "ios",
+              ""
+            )} compatible tag`,
+          };
+
+          NfcManager.registerTagEvent(iosOptions)
+            .then(() => {
+              console.log(`iOS ${tech} reader ready`);
+
+              // For iOS, we need to set up an event listener to get the tag data
+              NfcManager.setEventListener(NfcEvents.DiscoverTag, (tag: any) => {
+                try {
+                  console.log("Tag discovered:", tag);
+
+                  const tagData: TagData = {
+                    id: tag.id,
+                    ndefMessage: tag.ndefMessage,
+                  };
+
+                  // Attempt to extract technology-specific data
+                  if (tech === NfcTech.MifareIOS && tag.mifareFamily) {
+                    tagData.type = `Mifare: ${tag.mifareFamily}`;
+                  } else if (tech === NfcTech.Iso15693IOS && tag.iso15693) {
+                    tagData.type = "ISO 15693";
+                  } else if (tech === NfcTech.FelicaIOS && tag.felica) {
+                    tagData.type = "FeliCa";
+                  }
+
+                  // Finish the reading operation
+                  clearTimeout(timeoutId);
+                  this.isReading = false;
+                  this.currentOperation = null;
+                  this.cancelNfcOperation();
+                  resolve(tagData);
+                } catch (error) {
+                  clearTimeout(timeoutId);
+                  this.isReading = false;
+                  this.currentOperation = null;
+                  this.cancelNfcOperation();
+                  reject(error);
+                }
+              });
+            })
+            .catch((error: Error) => {
+              clearTimeout(timeoutId);
+              this.isReading = false;
+              this.currentOperation = null;
+              reject(error);
+            });
+        } else if (
+          tech === NfcTech.Ndef ||
+          tech === NfcTech.NfcA ||
+          tech === NfcTech.IsoDep
+        ) {
+          // For standard technologies on iOS
+          const iosOptions = {
+            alertMessage: `Hold your iPhone near a ${tech} compatible tag`,
+          };
+
+          NfcManager.registerTagEvent(iosOptions)
+            .then(() => {
+              console.log(`iOS ${tech} reader ready`);
+
+              // For iOS, we need to set up an event listener to get the tag data
+              NfcManager.setEventListener(NfcEvents.DiscoverTag, (tag: any) => {
+                try {
+                  console.log("Tag discovered:", tag);
+
+                  const tagData: TagData = {
+                    id: tag.id,
+                    ndefMessage: tag.ndefMessage,
+                  };
+
+                  // Try to parse NDEF message if present
+                  if (tag.ndefMessage && tag.ndefMessage.length > 0) {
+                    const record = tag.ndefMessage[0];
+                    try {
+                      tagData.rawPayload = Ndef.text.decodePayload(
+                        record.payload
+                      );
+
+                      try {
+                        tagData.parsedPayload = JSON.parse(tagData.rawPayload);
+                      } catch (e) {
+                        tagData.parsedPayload = tagData.rawPayload;
+                      }
+                    } catch (e) {
+                      console.log("Could not decode payload as text");
+                    }
+                  }
+
+                  // Finish the reading operation
+                  clearTimeout(timeoutId);
+                  this.isReading = false;
+                  this.currentOperation = null;
+                  this.cancelNfcOperation();
+                  resolve(tagData);
+                } catch (error) {
+                  clearTimeout(timeoutId);
+                  this.isReading = false;
+                  this.currentOperation = null;
+                  this.cancelNfcOperation();
+                  reject(error);
+                }
+              });
+            })
+            .catch((error: Error) => {
+              clearTimeout(timeoutId);
+              this.isReading = false;
+              this.currentOperation = null;
+              reject(error);
+            });
+        } else {
+          clearTimeout(timeoutId);
+          this.isReading = false;
+          this.currentOperation = null;
+          reject(new Error(`Technology ${tech} not implemented for iOS`));
+        }
+      } else {
+        // Android implementation
+        NfcManager.requestTechnology(tech as NfcTech)
+          .then(async () => {
+            try {
+              // Get the tag data - this will look different for each technology
+              const tag = await NfcManager.getTag();
+              console.log(`${tech} tag details:`, tag);
+
+              // Create a standardized response
+              const tagData: TagData = {
+                id: tag?.id,
+                technologiesAvailable: tag?.techTypes,
+                type: tech,
+              };
+
+              // For NDEF tags, attempt to read the message
+              if (tech === NfcTech.Ndef && tag?.ndefMessage) {
+                tagData.ndefMessage = tag.ndefMessage;
+
+                if (tag.ndefMessage.length > 0) {
+                  const record = tag.ndefMessage[0];
+                  try {
+                    tagData.rawPayload = Ndef.text.decodePayload(
+                      record.payload as any
+                    );
+
+                    try {
+                      tagData.parsedPayload = JSON.parse(tagData.rawPayload);
+                    } catch (e) {
+                      tagData.parsedPayload = tagData.rawPayload;
+                    }
+                  } catch (e) {
+                    console.log("Could not decode payload as text");
+                  }
+                }
+              }
+
+              // For other technologies, add technology-specific data if available
+              switch (tech) {
+                case NfcTech.MifareClassic:
+                  if (tag?.mifareclassic) {
+                    tagData.type = "Mifare Classic";
+                  }
+                  break;
+                case NfcTech.MifareUltralight:
+                  if (tag?.mifareultralight) {
+                    tagData.type = "Mifare Ultralight";
+                  }
+                  break;
+                case NfcTech.IsoDep:
+                  if (tag?.isodep) {
+                    tagData.type = "ISO-DEP";
+                  }
+                  break;
+                // Add more technology-specific handling as needed
+              }
+
+              clearTimeout(timeoutId);
+              this.isReading = false;
+              this.currentOperation = null;
+              await this.cancelNfcOperation();
+              resolve(tagData);
+            } catch (error) {
+              clearTimeout(timeoutId);
+              this.isReading = false;
+              this.currentOperation = null;
+              await this.cancelNfcOperation();
+              reject(error);
+            }
+          })
+          .catch((error: Error) => {
+            clearTimeout(timeoutId);
+            this.isReading = false;
+            this.currentOperation = null;
+            this.cancelNfcOperation();
+            reject(error);
+          });
+      }
+    });
+
+    this.currentOperation = techPromise;
+    return techPromise;
   }
 }
 
