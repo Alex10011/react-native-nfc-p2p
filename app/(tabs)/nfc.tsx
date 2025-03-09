@@ -10,6 +10,8 @@ import {
   Image,
   ActivityIndicator,
   SafeAreaView,
+  Switch,
+  ScrollView,
 } from "react-native";
 import { getCurrentUser, User } from "../models/user";
 import {
@@ -21,6 +23,12 @@ import {
 } from "../models/message";
 import NFCService from "../services/nfcService";
 
+// Define error types for better error handling
+interface NFCError {
+  message?: string;
+  [key: string]: any;
+}
+
 export default function NFCPage() {
   const [hasNfc, setHasNfc] = useState<boolean | null>(null);
   const [enabled, setEnabled] = useState<boolean>(false);
@@ -28,33 +36,57 @@ export default function NFCPage() {
   const [isReading, setIsReading] = useState<boolean>(false);
   const [isWriting, setIsWriting] = useState<boolean>(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [operationInProgress, setOperationInProgress] =
+    useState<boolean>(false);
+  const [debugInfo, setDebugInfo] = useState<string[]>([]);
+
+  const isIOS = Platform.OS === "ios";
+
+  // Add debug info
+  const addDebugInfo = (message: string) => {
+    setDebugInfo((prev) => [message, ...prev.slice(0, 9)]);
+  };
 
   useEffect(() => {
     const initializeNFC = async () => {
       try {
-        // Inicializar el servicio NFC
+        // Initialize NFC service
+        addDebugInfo("Checking NFC support...");
         const supported = await NFCService.initialize();
         setHasNfc(supported);
 
         if (supported) {
           const enabled = await NFCService.checkIsEnabled();
           setEnabled(enabled);
+          addDebugInfo(`NFC supported and ${enabled ? "enabled" : "disabled"}`);
+          addDebugInfo(
+            `Device type: ${
+              isIOS ? "iOS (Reader Only)" : "Android (Reader/Tag)"
+            }`
+          );
+        } else {
+          addDebugInfo("NFC not supported on this device");
         }
 
-        // Inicializar el usuario actual
+        // Initialize current user
         setCurrentUser(getCurrentUser());
       } catch (error) {
         console.error("Error initializing NFC:", error);
+        addDebugInfo(
+          `Error initializing: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
         Alert.alert(
           "Error",
-          "Error initializing NFC / Error al inicializar NFC"
+          "Error initializing NFC. Please ensure NFC is enabled on your device."
         );
       }
     };
 
     initializeNFC();
     return () => {
-      // Limpieza al desmontar
+      // Cleanup on unmount
       NFCService.cleanup().catch(() => {
         /* do nothing */
       });
@@ -62,139 +94,179 @@ export default function NFCPage() {
   }, []);
 
   const readNFCTag = async () => {
-    if (!enabled || isReading) return;
+    if (!enabled || operationInProgress) return;
 
     setIsReading(true);
+    setOperationInProgress(true);
+    addDebugInfo("Starting NFC read operation...");
+
     try {
-      Alert.alert(
-        "NFC Reader / Lector NFC",
-        "Place your device near an NFC tag or another NFC device / Acerca tu dispositivo a una etiqueta NFC u otro dispositivo NFC"
-      );
+      // Guide user to tap the NFC device
+      if (isIOS) {
+        // iOS will show system prompt
+        addDebugInfo("iOS NFC reader mode activated");
+      } else {
+        addDebugInfo("Android NFC reader mode activated");
+        Alert.alert(
+          "NFC Reader",
+          "Place your Android device near an NFC tag or another device"
+        );
+      }
 
       const rawData = await NFCService.readNFC();
+      addDebugInfo(`Received data (length: ${rawData.length})`);
+      console.log("Received NFC Data:", rawData);
+
       processReceivedData(rawData);
-    } catch (ex) {
+    } catch (ex: unknown) {
       console.warn("Error reading NFC:", ex);
-      Alert.alert(
-        "Error",
-        "Error reading NFC tag / Error al leer etiqueta NFC"
+      addDebugInfo(
+        `Read error: ${ex instanceof Error ? ex.message : String(ex)}`
       );
+
+      // Only show alert if not canceled by user (iOS shows its own dialog)
+      if (
+        ex &&
+        typeof ex === "object" &&
+        "message" in ex &&
+        typeof ex.message === "string" &&
+        !ex.message.includes("cancelled") &&
+        !ex.message.includes("user")
+      ) {
+        Alert.alert("Error", "Error reading NFC tag. Please try again.");
+      }
     } finally {
       setIsReading(false);
+      setOperationInProgress(false);
     }
   };
 
   const processReceivedData = (data: string) => {
     try {
+      console.log("Processing received data:", data);
+      addDebugInfo("Processing received data...");
       const receivedMessage = deserializeMessage(data);
-      if (receivedMessage) {
-        // Añadir mensaje a la lista
-        setMessages((prev) => [receivedMessage, ...prev]);
 
-        // Mostrar alerta con contenido
+      if (receivedMessage) {
+        // Add message to list
+        setMessages((prev) => [receivedMessage, ...prev]);
+        addDebugInfo(`Message received from: ${receivedMessage.senderName}`);
+
+        // Show alert with content
         Alert.alert(
-          "Message Received / Mensaje Recibido",
-          `${receivedMessage.senderName}: ${receivedMessage.content}`
+          "Message Received",
+          `From: ${receivedMessage.senderName}\nMessage: ${receivedMessage.content}`
         );
       } else {
-        Alert.alert(
-          "Invalid Data / Datos Inválidos",
-          "The data is not a valid message / Los datos no son un mensaje válido"
-        );
+        addDebugInfo("Failed to parse message data");
+        Alert.alert("Invalid Data", "The data is not a valid message");
       }
     } catch (error) {
       console.error("Error processing received data:", error);
-      Alert.alert("Error", "Error processing data / Error al procesar datos");
+      addDebugInfo(
+        `Processing error: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      Alert.alert("Error", "Error processing data");
     }
   };
 
-  const sendPingMessage = async () => {
-    if (!currentUser || !enabled || isWriting) return;
+  const sendMessage = async (messageType: MessageType) => {
+    if (!currentUser || !enabled || operationInProgress) return;
 
-    setIsWriting(true);
-    try {
-      const message = createMessage(currentUser, MessageType.PING);
-
+    // iOS cannot send NFC messages, only read them
+    if (isIOS) {
       Alert.alert(
-        "NFC Writer / Escritor NFC",
-        "Place your device near another NFC device / Acerca tu dispositivo a otro dispositivo NFC"
+        "iOS Limitation",
+        "iOS devices can only read NFC tags, not emulate them. Please use an Android device to send messages."
       );
-
-      await NFCService.sendP2PMessage(message);
-
-      // Añadir mensaje a la lista
-      setMessages((prev) => [message, ...prev]);
-
-      Alert.alert(
-        "Success / Éxito",
-        "Ping message sent / Mensaje Ping enviado"
-      );
-    } catch (error) {
-      console.error("Error sending Ping message:", error);
-      Alert.alert("Error", "Error sending message / Error al enviar mensaje");
-    } finally {
-      setIsWriting(false);
+      return;
     }
-  };
-
-  const sendMarcoMessage = async () => {
-    if (!currentUser || !enabled || isWriting) return;
 
     setIsWriting(true);
-    try {
-      const message = createMessage(currentUser, MessageType.MARCO);
+    setOperationInProgress(true);
+    addDebugInfo(
+      `Setting up Android to emulate NFC tag with ${messageType} message...`
+    );
 
+    try {
+      const message = createMessage(currentUser, messageType);
+      console.log("Preparing message for tag emulation:", message);
+
+      // On Android, show different guidance
       Alert.alert(
-        "NFC Writer / Escritor NFC",
-        "Place your device near another NFC device / Acerca tu dispositivo a otro dispositivo NFC"
+        "Android NFC Tag Mode",
+        "Your Android phone is now emulating an NFC tag. Hold an iPhone near this device (with NFC Reader open) to transfer the message."
       );
 
       await NFCService.sendP2PMessage(message);
+      addDebugInfo(`${messageType} message emulation completed`);
 
-      // Añadir mensaje a la lista
+      // Add message to list
       setMessages((prev) => [message, ...prev]);
+    } catch (error: unknown) {
+      console.error(`Error setting up NFC tag emulation:`, error);
+      addDebugInfo(
+        `Emulation error: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
 
       Alert.alert(
-        "Success / Éxito",
-        "Marco message sent / Mensaje Marco enviado"
+        "Error",
+        `Error setting up Android as NFC tag. Please try again.`
       );
-    } catch (error) {
-      console.error("Error sending Marco message:", error);
-      Alert.alert("Error", "Error sending message / Error al enviar mensaje");
     } finally {
       setIsWriting(false);
+      setOperationInProgress(false);
     }
   };
 
   const sendResponse = async (originalMessage: Message) => {
-    if (!currentUser || !enabled || isWriting) return;
+    if (!currentUser || !enabled || operationInProgress) return;
+
+    // iOS cannot send NFC messages, only read them
+    if (isIOS) {
+      Alert.alert(
+        "iOS Limitation",
+        "iOS devices can only read NFC tags, not emulate them. Please use an Android device to send responses."
+      );
+      return;
+    }
 
     setIsWriting(true);
+    setOperationInProgress(true);
+    addDebugInfo(`Setting up response to ${originalMessage.senderName}...`);
+
     try {
       const response = createResponseMessage(currentUser, originalMessage);
 
       Alert.alert(
-        "NFC Writer / Escritor NFC",
-        "Place your device near another NFC device / Acerca tu dispositivo a otro dispositivo NFC"
+        "Android NFC Tag Mode",
+        "Your Android phone is now emulating an NFC tag with the response. Hold an iPhone near this device (with NFC Reader open) to transfer the message."
       );
 
       await NFCService.sendP2PMessage(response);
+      addDebugInfo("Response emulation completed");
 
-      // Añadir mensaje a la lista
+      // Add message to list
       setMessages((prev) => [response, ...prev]);
-
-      Alert.alert(
-        "Success / Éxito",
-        `Response sent: ${response.content} / Respuesta enviada: ${response.content}`
-      );
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error sending response:", error);
+      addDebugInfo(
+        `Response error: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+
       Alert.alert(
         "Error",
-        "Error sending response / Error al enviar respuesta"
+        "Error setting up response as NFC tag. Please try again."
       );
     } finally {
       setIsWriting(false);
+      setOperationInProgress(false);
     }
   };
 
@@ -210,7 +282,7 @@ export default function NFCPage() {
       >
         <View style={styles.messageHeader}>
           <Text style={styles.messageSender}>
-            {isMyMessage ? "Tú / You" : item.senderName}
+            {isMyMessage ? "You" : item.senderName}
           </Text>
           <Text style={styles.messageTime}>
             {new Date(item.timestamp).toLocaleTimeString()}
@@ -219,25 +291,86 @@ export default function NFCPage() {
         <Text style={styles.messageContent}>{item.content}</Text>
         <Text style={styles.messageType}>{item.type}</Text>
 
-        {!isMyMessage && (
+        {!isMyMessage && !operationInProgress && !isIOS && (
           <TouchableOpacity
             style={styles.responseButton}
             onPress={() => sendResponse(item)}
-            disabled={isWriting || isReading}
+            disabled={operationInProgress}
           >
-            <Text style={styles.responseButtonText}>Responder / Respond</Text>
+            <Text style={styles.responseButtonText}>Respond</Text>
           </TouchableOpacity>
         )}
       </View>
     );
   };
 
+  const renderInstructions = () => (
+    <View style={styles.instructionsContainer}>
+      <Text style={styles.instructionsTitle}>
+        {isIOS ? "iOS NFC Reader Mode:" : "Android NFC Tag Emulation:"}
+      </Text>
+
+      {isIOS ? (
+        <>
+          <Text style={styles.instructionText}>
+            1. Press "Read NFC" on this iPhone
+          </Text>
+          <Text style={styles.instructionText}>
+            2. On an Android device, press "Send Ping"
+          </Text>
+          <Text style={styles.instructionText}>
+            3. Hold this iPhone near the Android device
+          </Text>
+          <Text style={styles.instructionText}>
+            4. Wait for the iOS system prompt to complete
+          </Text>
+          <Text style={styles.warningText}>
+            Note: iOS can only read NFC tags, not emulate them
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text style={styles.instructionText}>
+            1. On an iPhone, press "Read NFC"
+          </Text>
+          <Text style={styles.instructionText}>
+            2. Press "Send Ping" on this Android device
+          </Text>
+          <Text style={styles.instructionText}>
+            3. Hold this Android device near the iPhone
+          </Text>
+          <Text style={styles.instructionText}>
+            4. Keep devices together until reading completes
+          </Text>
+          <Text style={styles.warningText}>
+            Note: Android will emulate an NFC tag for iOS to read
+          </Text>
+        </>
+      )}
+
+      <Text style={styles.warningText}>
+        Important: NFC has limited range. Hold devices 1-2cm apart.
+      </Text>
+    </View>
+  );
+
+  const renderDebugSection = () => (
+    <View style={styles.debugContainer}>
+      <Text style={styles.debugTitle}>Debug Info:</Text>
+      <ScrollView style={styles.debugScroll}>
+        {debugInfo.map((message, index) => (
+          <Text key={index} style={styles.debugText}>
+            {message}
+          </Text>
+        ))}
+      </ScrollView>
+    </View>
+  );
+
   if (hasNfc === null) {
     return (
       <SafeAreaView style={styles.container}>
-        <Text style={styles.description}>
-          Checking NFC availability... / Verificando disponibilidad NFC...
-        </Text>
+        <Text style={styles.description}>Checking NFC availability...</Text>
       </SafeAreaView>
     );
   }
@@ -245,9 +378,7 @@ export default function NFCPage() {
   if (!hasNfc) {
     return (
       <SafeAreaView style={styles.container}>
-        <Text style={styles.description}>
-          Your device doesn't support NFC / Tu dispositivo no soporta NFC
-        </Text>
+        <Text style={styles.description}>Your device doesn't support NFC</Text>
       </SafeAreaView>
     );
   }
@@ -255,7 +386,9 @@ export default function NFCPage() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerText}>NFC P2P / NFC P2P</Text>
+        <Text style={styles.headerText}>
+          NFC {isIOS ? "Reader" : "Tag Emulator"}
+        </Text>
       </View>
 
       <View style={styles.userInfo}>
@@ -270,59 +403,66 @@ export default function NFCPage() {
         )}
       </View>
 
+      {renderInstructions()}
+
       <View style={styles.actions}>
         <TouchableOpacity
           style={[
             styles.button,
-            (isReading || !enabled) && styles.buttonDisabled,
+            (isReading || !enabled || operationInProgress) &&
+              styles.buttonDisabled,
           ]}
           onPress={readNFCTag}
-          disabled={isReading || !enabled}
+          disabled={isReading || !enabled || operationInProgress}
         >
           {isReading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.buttonText}>Read NFC / Leer NFC</Text>
+            <Text style={styles.buttonText}>Read NFC</Text>
           )}
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[
             styles.button,
-            (isWriting || !enabled) && styles.buttonDisabled,
+            (isWriting || !enabled || operationInProgress || isIOS) &&
+              styles.buttonDisabled,
           ]}
-          onPress={sendPingMessage}
-          disabled={isWriting || !enabled}
+          onPress={() => sendMessage(MessageType.PING)}
+          disabled={isWriting || !enabled || operationInProgress || isIOS}
         >
-          {isWriting ? (
+          {isWriting && messages[0]?.type === MessageType.PING ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.buttonText}>Send Ping / Enviar Ping</Text>
+            <Text style={styles.buttonText}>Send Ping</Text>
           )}
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[
             styles.button,
-            (isWriting || !enabled) && styles.buttonDisabled,
+            (isWriting || !enabled || operationInProgress || isIOS) &&
+              styles.buttonDisabled,
           ]}
-          onPress={sendMarcoMessage}
-          disabled={isWriting || !enabled}
+          onPress={() => sendMessage(MessageType.MARCO)}
+          disabled={isWriting || !enabled || operationInProgress || isIOS}
         >
-          {isWriting ? (
+          {isWriting && messages[0]?.type === MessageType.MARCO ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.buttonText}>Send Marco / Enviar Marco</Text>
+            <Text style={styles.buttonText}>Send Marco</Text>
           )}
         </TouchableOpacity>
       </View>
 
+      {renderDebugSection()}
+
       <View style={styles.messageList}>
-        <Text style={styles.sectionTitle}>Messages / Mensajes</Text>
+        <Text style={styles.sectionTitle}>
+          Messages {messages.length > 0 ? `(${messages.length})` : ""}
+        </Text>
         {messages.length === 0 ? (
-          <Text style={styles.emptyState}>
-            No messages yet / Aún no hay mensajes
-          </Text>
+          <Text style={styles.emptyState}>No messages yet</Text>
         ) : (
           <FlatList
             data={messages}
@@ -383,8 +523,33 @@ const styles = StyleSheet.create({
     color: "#333",
     paddingHorizontal: 20,
   },
+  instructionsContainer: {
+    backgroundColor: "#f8f9fa",
+    padding: 16,
+    margin: 10,
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: "#007AFF",
+  },
+  instructionsTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    marginBottom: 8,
+    color: "#333",
+  },
+  instructionText: {
+    fontSize: 14,
+    color: "#555",
+    marginBottom: 4,
+  },
+  warningText: {
+    fontSize: 14,
+    color: "#e74c3c",
+    marginTop: 4,
+    fontWeight: "500",
+  },
   actions: {
-    flexDirection: "column",
+    flexDirection: "row",
     justifyContent: "space-around",
     padding: 16,
     borderBottomWidth: 1,
@@ -396,7 +561,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     minWidth: 100,
     alignItems: "center",
-    marginVertical: 5,
   },
   buttonDisabled: {
     backgroundColor: "#ccc",
@@ -405,6 +569,29 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     fontWeight: "bold",
+  },
+  debugContainer: {
+    backgroundColor: "#f9f9f9",
+    margin: 10,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    maxHeight: 100,
+  },
+  debugTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 4,
+    color: "#333",
+  },
+  debugScroll: {
+    maxHeight: 80,
+  },
+  debugText: {
+    fontSize: 12,
+    color: "#555",
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
   messageList: {
     flex: 1,

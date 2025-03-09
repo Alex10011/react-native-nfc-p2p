@@ -71,7 +71,6 @@ export function generateRandomUser(): User {
   const avatar = `https://api.dicebear.com/9.x/${avatarStyle}/png?seed=${encodeURIComponent(
     name
   )}`;
-  console.log(avatar);
 
   return {
     id,
