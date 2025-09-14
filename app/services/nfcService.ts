@@ -175,34 +175,62 @@ class NFCService {
             reject(error);
           });
       } else {
-        // Android implementation
-        NfcManager.requestTechnology(NfcTech.Ndef)
-          .then(async () => {
+        // Android implementation - improved for Android-to-Android compatibility
+        console.log("Starting Android NFC read operation...");
+        
+        // Try multiple technologies to improve Android-to-Android compatibility
+        const tryReadWithTech = async (tech: NfcTech) => {
+          try {
+            console.log(`Trying to read with ${tech}...`);
+            await NfcManager.requestTechnology(tech);
             const tag = await NfcManager.getTag();
-            const ndef = tag?.ndefMessage?.[0] || null;
-
-            if (ndef) {
-              const payloadText = Ndef.text.decodePayload(ndef.payload as any);
-              clearTimeout(timeoutId);
-              this.isReading = false;
-              this.currentOperation = null;
-              this.cancelNfcOperation();
-              resolve(payloadText);
-            } else {
-              clearTimeout(timeoutId);
-              this.isReading = false;
-              this.currentOperation = null;
-              this.cancelNfcOperation();
-              reject(new Error("No NDEF message found"));
+            
+            if (!tag?.ndefMessage || tag.ndefMessage.length === 0) {
+              throw new Error(`No NDEF message found using ${tech}`);
             }
-          })
-          .catch((error: Error) => {
+            
+            const ndef = tag.ndefMessage[0];
+            const payloadText = Ndef.text.decodePayload(ndef.payload as any);
+            
+            console.log(`Successfully read data with ${tech}:`, payloadText.substring(0, 50) + (payloadText.length > 50 ? '...' : ''));
+            
             clearTimeout(timeoutId);
             this.isReading = false;
             this.currentOperation = null;
-            this.cancelNfcOperation();
-            reject(error);
-          });
+            await this.cancelNfcOperation();
+            resolve(payloadText);
+            return true;
+          } catch (error) {
+            console.log(`Failed to read with ${tech}:`, error);
+            await this.cancelNfcOperation();
+            return false;
+          }
+        };
+        
+        // Try different technologies in sequence
+        const attemptRead = async () => {
+          // First try with Ndef (most common)
+          if (await tryReadWithTech(NfcTech.Ndef)) return;
+          
+          // Then try with NfcA if Ndef failed
+          if (await tryReadWithTech(NfcTech.NfcA)) return;
+          
+          // If both failed, report error
+          clearTimeout(timeoutId);
+          this.isReading = false;
+          this.currentOperation = null;
+          await this.cancelNfcOperation();
+          reject(new Error("Failed to read NFC data with available technologies"));
+        };
+        
+        // Start the reading attempt
+        attemptRead().catch((error) => {
+          clearTimeout(timeoutId);
+          this.isReading = false;
+          this.currentOperation = null;
+          this.cancelNfcOperation();
+          reject(error);
+        });
       }
     });
 
@@ -301,49 +329,87 @@ class NFCService {
       this.currentOperation = writePromise;
       return writePromise;
     } else {
-      // Android implementation - used for Android to iOS communication
-      // This is the key part that needs to work for the Android device to be detected by iOS
+      // Android implementation - supports both Android to iOS and Android to Android
       const writePromise = new Promise<void>(async (resolve, reject) => {
         try {
           if (Platform.OS === "android") {
-            console.log("Setting up Android as NFC tag emulator...");
+            console.log("Setting up Android NFC communication...");
 
-            // Android HCE (Host Card Emulation) approach
-            // We need to create an NDEF message and make it available for reading
+            // Create NDEF message
             const records = [Ndef.textRecord(messageStr)];
             const bytes = Ndef.encodeMessage(records);
-
-            // Request NfcA technology which is more suitable for tag emulation
-            await NfcManager.requestTechnology(NfcTech.NfcA);
-
-            // For Android, we need to keep the phone in emulation mode to be detected by iOS
-            console.log("Android device ready for NFC tag emulation");
-
-            // Show a timeout dialog after 30 seconds
-            const timeoutId = setTimeout(() => {
-              this.isWriting = false;
-              this.currentOperation = null;
-              this.cancelNfcOperation();
-              resolve(); // Resolve anyway as we don't know if iOS has read it
-            }, 30000);
-
-            // When using this in production, you might want to implement a callback
-            // mechanism to know when the iOS device has successfully read the tag
-
-            // We must keep the NFC session active for iOS to detect it
-            setTimeout(async () => {
-              clearTimeout(timeoutId);
-              console.log("Ending Android NFC tag emulation");
-              this.isWriting = false;
-              this.currentOperation = null;
-              await this.cancelNfcOperation();
-              resolve();
-            }, 25000); // Keep active for 25 seconds
+            
+            // First try with NfcA technology for iOS compatibility
+            try {
+              console.log("Trying NfcA technology for tag emulation...");
+              // Request NfcA technology which is suitable for tag emulation with iOS
+              await NfcManager.requestTechnology(NfcTech.NfcA);
+              
+              console.log("Android device ready for NFC tag emulation");
+              
+              // Show a timeout dialog after 30 seconds
+              const timeoutId = setTimeout(() => {
+                this.isWriting = false;
+                this.currentOperation = null;
+                this.cancelNfcOperation();
+                resolve(); // Resolve anyway as we don't know if the other device has read it
+              }, 30000);
+              
+              // Keep the NFC session active
+              setTimeout(async () => {
+                clearTimeout(timeoutId);
+                console.log("Ending Android NFC tag emulation");
+                this.isWriting = false;
+                this.currentOperation = null;
+                await this.cancelNfcOperation();
+                resolve();
+              }, 25000); // Keep active for 25 seconds
+            } catch (nfcAError) {
+              // If NfcA fails, try Android Beam approach for Android to Android
+              console.log("NfcA technology failed, trying NDEF for Android Beam...", nfcAError);
+              
+              try {
+                // For Android to Android, try Android Beam with Ndef
+                await NfcManager.requestTechnology(NfcTech.Ndef);
+                
+                if (bytes) {
+                  console.log("Preparing Android Beam...");
+                  
+                  // Use pushMessage for Android Beam
+                  await NfcManager.ndefHandler.setNdefPushMessage(bytes);
+                  
+                  console.log("Android Beam ready. Please touch devices back-to-back.");
+                  
+                  // Keep session active for some time
+                  const timeoutId = setTimeout(() => {
+                    this.isWriting = false;
+                    this.currentOperation = null;
+                    this.cancelNfcOperation();
+                    resolve();
+                  }, 30000);
+                  
+                  // Keep active for 25 seconds
+                  setTimeout(async () => {
+                    clearTimeout(timeoutId);
+                    console.log("Ending Android Beam session");
+                    this.isWriting = false;
+                    this.currentOperation = null;
+                    await this.cancelNfcOperation();
+                    resolve();
+                  }, 25000);
+                } else {
+                  throw new Error("Failed to encode NDEF message");
+                }
+              } catch (ndefError) {
+                console.error("Both NfcA and NDEF approaches failed:", ndefError);
+                throw ndefError;
+              }
+            }
           } else {
             reject(new Error("Not supported on this platform"));
           }
         } catch (error) {
-          console.error("Error setting up Android NFC tag emulation:", error);
+          console.error("Error setting up Android NFC communication:", error);
           this.isWriting = false;
           this.currentOperation = null;
           await this.cancelNfcOperation();
@@ -357,16 +423,16 @@ class NFCService {
   }
 
   /**
-   * P2P communication method - mainly for Android to iOS
+   * P2P communication method - for Android to iOS and Android to Android
    * On iOS, we use read mode
-   * On Android, we use tag emulation mode
+   * On Android, we use tag emulation mode or Android Beam depending on the target
    */
   async sendP2PMessage(message: Message): Promise<void> {
     if (Platform.OS === "ios") {
       // iOS can only read, not send
       throw new Error("iOS cannot send NFC messages, it can only read them");
     } else {
-      // For Android, we use tag emulation to be detected by iOS
+      // For Android devices
       return this.writeNFC(message);
     }
   }

@@ -194,10 +194,10 @@ export default function NFCPage() {
       const message = createMessage(currentUser, messageType);
       console.log("Preparing message for tag emulation:", message);
 
-      // On Android, show different guidance
+      // On Android, show different guidance based on what we know might be the receiver
       Alert.alert(
         "Android NFC Tag Mode",
-        "Your Android phone is now emulating an NFC tag. Hold an iPhone near this device (with NFC Reader open) to transfer the message."
+        "Your Android phone is ready to send data. Hold another NFC-enabled phone (with NFC Reader open) near this device to transfer the message. Works with both Android and iPhone."
       );
 
       await NFCService.sendP2PMessage(message);
@@ -244,7 +244,7 @@ export default function NFCPage() {
 
       Alert.alert(
         "Android NFC Tag Mode",
-        "Your Android phone is now emulating an NFC tag with the response. Hold an iPhone near this device (with NFC Reader open) to transfer the message."
+        "Your Android phone is ready to send the response. Hold the other phone near this device (with NFC Reader open) to transfer the message. Works with both Android and iPhone."
       );
 
       await NFCService.sendP2PMessage(response);
@@ -343,7 +343,7 @@ export default function NFCPage() {
             4. Keep devices together until reading completes
           </Text>
           <Text style={styles.warningText}>
-            Note: Android will emulate an NFC tag for iOS to read
+            Note: Android will send NFC data that can be read by both iOS and Android
           </Text>
         </>
       )}
@@ -390,88 +390,87 @@ export default function NFCPage() {
           NFC {isIOS ? "Reader" : "Tag Emulator"}
         </Text>
       </View>
+      
+      <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContentContainer}>
+        <View style={styles.userInfo}>
+          {currentUser && (
+            <>
+              <Image source={{ uri: currentUser.avatar }} style={styles.avatar} />
+              <View style={styles.userDetails}>
+                <Text style={styles.userName}>{currentUser.name}</Text>
+                <Text style={styles.userEmail}>{currentUser.email}</Text>
+              </View>
+            </>
+          )}
+        </View>
 
-      <View style={styles.userInfo}>
-        {currentUser && (
-          <>
-            <Image source={{ uri: currentUser.avatar }} style={styles.avatar} />
-            <View style={styles.userDetails}>
-              <Text style={styles.userName}>{currentUser.name}</Text>
-              <Text style={styles.userEmail}>{currentUser.email}</Text>
+        {renderInstructions()}
+
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={[
+              styles.button,
+              (isReading || !enabled || operationInProgress) &&
+                styles.buttonDisabled,
+            ]}
+            onPress={readNFCTag}
+            disabled={isReading || !enabled || operationInProgress}
+          >
+            {isReading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Read NFC</Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.button,
+              (isWriting || !enabled || operationInProgress || isIOS) &&
+                styles.buttonDisabled,
+            ]}
+            onPress={() => sendMessage(MessageType.PING)}
+            disabled={isWriting || !enabled || operationInProgress || isIOS}
+          >
+            {isWriting && messages[0]?.type === MessageType.PING ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Send Ping</Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.button,
+              (isWriting || !enabled || operationInProgress || isIOS) &&
+                styles.buttonDisabled,
+            ]}
+            onPress={() => sendMessage(MessageType.MARCO)}
+            disabled={isWriting || !enabled || operationInProgress || isIOS}
+          >
+            {isWriting && messages[0]?.type === MessageType.MARCO ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Send Marco</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {renderDebugSection()}
+
+        <View style={styles.messageContainer}>
+          <Text style={styles.sectionTitle}>
+            Messages {messages.length > 0 ? `(${messages.length})` : ""}
+          </Text>
+          {messages.length === 0 ? (
+            <Text style={styles.emptyState}>No messages yet</Text>
+          ) : (
+            <View style={styles.messagesWrapper}>
+              {messages.map(item => renderMessageItem({ item }))}
             </View>
-          </>
-        )}
-      </View>
-
-      {renderInstructions()}
-
-      <View style={styles.actions}>
-        <TouchableOpacity
-          style={[
-            styles.button,
-            (isReading || !enabled || operationInProgress) &&
-              styles.buttonDisabled,
-          ]}
-          onPress={readNFCTag}
-          disabled={isReading || !enabled || operationInProgress}
-        >
-          {isReading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>Read NFC</Text>
           )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            styles.button,
-            (isWriting || !enabled || operationInProgress || isIOS) &&
-              styles.buttonDisabled,
-          ]}
-          onPress={() => sendMessage(MessageType.PING)}
-          disabled={isWriting || !enabled || operationInProgress || isIOS}
-        >
-          {isWriting && messages[0]?.type === MessageType.PING ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>Send Ping</Text>
-          )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            styles.button,
-            (isWriting || !enabled || operationInProgress || isIOS) &&
-              styles.buttonDisabled,
-          ]}
-          onPress={() => sendMessage(MessageType.MARCO)}
-          disabled={isWriting || !enabled || operationInProgress || isIOS}
-        >
-          {isWriting && messages[0]?.type === MessageType.MARCO ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>Send Marco</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      {renderDebugSection()}
-
-      <View style={styles.messageList}>
-        <Text style={styles.sectionTitle}>
-          Messages {messages.length > 0 ? `(${messages.length})` : ""}
-        </Text>
-        {messages.length === 0 ? (
-          <Text style={styles.emptyState}>No messages yet</Text>
-        ) : (
-          <FlatList
-            data={messages}
-            renderItem={renderMessageItem}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.messageListContent}
-          />
-        )}
-      </View>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -490,6 +489,12 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "bold",
     color: "#fff",
+  },
+  scrollContainer: {
+    flex: 1,
+  },
+  scrollContentContainer: {
+    paddingBottom: 20, // 添加底部填充，确保内容完全可滚动
   },
   userInfo: {
     flexDirection: "row",
@@ -593,9 +598,11 @@ const styles = StyleSheet.create({
     color: "#555",
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
-  messageList: {
-    flex: 1,
+  messageContainer: {
     padding: 16,
+  },
+  messagesWrapper: {
+    paddingVertical: 10,
   },
   sectionTitle: {
     fontSize: 18,
@@ -607,6 +614,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     color: "#888",
     marginTop: 30,
+    marginBottom: 30,
   },
   messageListContent: {
     padding: 4,
